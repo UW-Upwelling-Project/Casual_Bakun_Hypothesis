@@ -1,0 +1,198 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## Download One day of the data to see what is going on.
+
+```{r}
+
+d <- read.csv("data/peru_data.csv")
+
+d
+```
+
+```{r}
+d2 <- read.csv("data/peru_data_2.csv", header = TRUE)
+```
+
+## I have noticed that data between 1967 and 1981 are not existed. Thus, I want to ignore first 11090 rows. The last several rows are also not existed. Thus, ignored.
+
+```{r}
+d2 <- d2[11090:43880, ]
+
+
+
+complete_data_frame <- function(data) {
+  d <- data
+  index_list <- list()
+  num <- 0
+  tol <- 1e-3
+  for (i in 11090:43880) {
+    if (is.nan(as.numeric(d2[i, ]$ektrx))) {
+      if (as.numeric(d2[i,]$uv_mag_mean) > -tol & as.numeric(d2[i,]$uv_mag_mean < tol)) {
+        num <- num + 1
+        index_list <- append(index_list, i) 
+      }
+    }
+  }
+  return(index_list)
+}
+```
+
+```{r}
+
+rm_list <- complete_data_frame(d2)
+
+d2_new <- d2[-unlist(rm_list), ]
+
+```
+
+```{r}
+library(dplyr)
+```
+
+```{r}
+d2_sorted <- d2_new %>%
+  group_by(latitude, longitude)
+```
+
+```{r}
+upwell <- function(ektrx, ektry, coast_angle) {
+  pi <- 3.1415927
+  degtorad <- pi / 180.
+  alpha <- (360 - coast_angle) * degtorad
+  s1 <- cos(alpha)
+  t1 <- sin(alpha)
+  s2 <- -1 * t1
+  t2 <- s1
+  perp <- (s1 * ektrx) + (t1 * ektry)
+  para <- (s2 * ektrx) + (t2 * ektry)
+  return(perp/10)
+}
+
+length_d2 <- dim(d2_sorted)
+
+coast_angle <- 180
+upwelling_info <- list()
+
+for (i in 1:length_d2[1]) {
+  ektrx <- as.double(d2_sorted[i,]$ektrx)
+  ektry <- as.double(d2_sorted[i,]$ektry)
+  
+  upwelling <- upwell(ektrx, ektry, coast_angle)
+  upwelling_info[i] <- upwelling
+}
+
+length(upwelling_info)
+```
+
+```{r}
+d2_sorted$upwelling <- upwelling_info
+```
+
+
+```{r}
+selected <- list()
+tol <- 1e-3
+
+for (i in 1:length_d2[1]) {  
+  if (as.numeric(d2_sorted[i,]$uv_mag_mean) < -tol || as.numeric(d2_sorted[i,]$uv_mag_mean > tol)) {
+    selected[i] <- i
+  }
+}
+```
+
+$$
+
+y_i \mid x_i, \alpha, \beta, \sigma \sim \mathcal{N(\mu_i, \sigma)} \\
+
+\mu_i = \alpha + \beta (x_i - \bar{x}) \\
+
+\alpha \sim \mathcal{N}(m_1, \sigma_1)\\
+
+\beta \sim \mathcal{N(m_2, \sigma_2)} \\
+
+\sigma \sim Unif(L_1, H_1)
+
+$$
+
+
+```{r}
+library(rjags)
+library(ggplot2)
+```
+
+```{r}
+mean(as.double(d2_sorted$uv_mag_mean))
+```
+
+```{r}
+
+plot(as.double(d2_sorted$uv_mag_mean), d2_sorted$upwelling)
+```
+
+ 
+```{r}
+linear_model_code <- "
+    data{
+      M <- dim(y)
+      n <- M[1]
+    }
+    model{
+      for(i in 1:n){
+        # likelihood
+        y[i] ~ dnorm(mu[i], tau)
+        # posterior predictive
+        ynew[i] ~ dnorm(mu[i], tau)
+      }
+      # conditional mean using matrix algebra
+      mu <- beta_0 + beta_D * d
+      beta_0 ~ dnorm(mb, pow(sb,-2))
+      beta_D ~ dnorm(mb, pow(sb,-2))
+      sigma ~ dunif(0, smax)
+      tau <- pow(sigma, -2)
+    }
+  "
+m3.b <- jags.model(file = textConnection(linear_model_code),
+  data = list(y = d2_sorted$upwelling,
+  d = as.double(d2_sorted$uv_mag_mean),
+  mb = 0,
+  sb = 1,
+  smax = 1)
+)
+```
+
+```{r}
+N <- length(d2_sorted$upwelling)
+
+burnin <- 1000
+
+iterations <- 3000
+
+update(m3.b, burnin)
+m3b.samples <- coda.samples(m3.b, variable.names = c("beta_0", "beta_D"), n.iter = iterations)
+```
+
+```{r}
+plot(m3b.samples)
+```
+
+```{r}
+effectiveSize(m3b.samples) 
+```
+
+```{r}
+gelman.diag(m3b.samples)
+```
+
+
+
+
+
+
+
+
+
+
+
